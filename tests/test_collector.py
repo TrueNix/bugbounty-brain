@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from types import TracebackType
+import urllib.request
 
 import pytest
 
@@ -71,11 +73,62 @@ class ScriptedFetcher:
 
 
 class FailingIfCalledFetcher:
-    requests: list[FetchRequest] = []
+    def __init__(self) -> None:
+        self.requests: list[FetchRequest] = []
 
     def __call__(self, request: FetchRequest) -> FetchResponse:
         self.requests.append(request)
         raise AssertionError(f"unexpected fetch for {request.url}")
+
+
+class FakeUrlResponse:
+    def __init__(self, effective_url: str, content: bytes) -> None:
+        self._effective_url = effective_url
+        self._content = content
+        self.headers: dict[str, str] = {"Content-Type": "application/xml"}
+        self.read_calls = 0
+        self.closed = False
+
+    def __enter__(self) -> FakeUrlResponse:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.closed = True
+
+    def getcode(self) -> int:
+        return 200
+
+    def geturl(self) -> str:
+        return self._effective_url
+
+    def read(self, amount: int) -> bytes:
+        self.read_calls += 1
+        return self._content[:amount]
+
+
+class FakeUrlOpener:
+    def __init__(self, *responses: FakeUrlResponse) -> None:
+        self._responses = list(responses)
+        self.requests: list[urllib.request.Request] = []
+        self.timeouts: list[float] = []
+
+    def __call__(
+        self,
+        request: urllib.request.Request,
+        *,
+        timeout: float,
+    ) -> FakeUrlResponse:
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        return self._responses.pop(0)
 
 
 def write_sources(tmp_path: Path, sources: list[dict[str, str | int]]) -> Path:
@@ -432,6 +485,220 @@ def test_collect_rejects_non_http_sources_without_fetching(tmp_path: Path) -> No
     ]
     assert fetcher.requests == []
     assert not cards_path.exists()
+
+
+@pytest.mark.parametrize(
+    "untrusted_url",
+    [
+        pytest.param(
+            "https://reader:feed-secret@feeds.example.test/rss.xml",
+            id="userinfo",
+        ),
+        pytest.param("http://localhost/feed", id="localhost"),
+        pytest.param("http://collector.local/feed", id="dot-local"),
+        pytest.param("http://collector.internal/feed", id="dot-internal"),
+        pytest.param("http://collector/feed", id="single-label"),
+        pytest.param("http://127.0.0.1/feed", id="ipv4-loopback"),
+        pytest.param("http://127.1/feed", id="ipv4-short-loopback"),
+        pytest.param("http://0177.0.0.1/feed", id="ipv4-octal-loopback"),
+        pytest.param("http://0x7f.0.0.1/feed", id="ipv4-hex-loopback"),
+        pytest.param("http://10.20.30.40/feed", id="ipv4-private"),
+        pytest.param("http://169.254.10.20/feed", id="ipv4-link-local"),
+        pytest.param("http://192.0.2.10/feed", id="ipv4-reserved"),
+        pytest.param("http://0.0.0.0/feed", id="ipv4-unspecified"),
+        pytest.param("http://[::1]/feed", id="ipv6-loopback"),
+        pytest.param("http://[fd00::10]/feed", id="ipv6-private"),
+        pytest.param("http://[fe80::10]/feed", id="ipv6-link-local"),
+        pytest.param("http://[2001:db8::10]/feed", id="ipv6-reserved"),
+        pytest.param("http://[::]/feed", id="ipv6-unspecified"),
+    ],
+)
+def test_collect_rejects_non_public_source_url_and_continues_with_public_fqdn(
+    tmp_path: Path,
+    untrusted_url: str,
+) -> None:
+    # Given
+    public_url = "http://feeds.example.test/rss.xml"
+    sources_path = write_sources(
+        tmp_path,
+        [
+            {"name": "Untrusted", "url": untrusted_url, "max_entries": 1},
+            {"name": "Public", "url": public_url, "max_entries": 1},
+        ],
+    )
+    raw_dir, cards_path, state_path = paths(tmp_path)
+    fetcher = ScriptedFetcher(
+        {public_url: [FetchResponse(200, {}, RSS_FEED)]},
+    )
+
+    # When
+    summary = collect(sources_path, raw_dir, cards_path, state_path, fetcher, NOW)
+
+    # Then
+    assert summary.sources_failed == 1
+    assert summary.failures[0].reason == "unsupported_url"
+    assert summary.sources_fetched == 1
+    assert [request.url for request in fetcher.requests] == [public_url]
+    assert "feed-secret" not in str(summary)
+
+
+@pytest.mark.parametrize(
+    ("request_url", "effective_url", "reason"),
+    [
+        pytest.param(
+            RSS_URL,
+            "https://other.example.test/rss.xml",
+            "redirect_cross_host",
+            id="cross-host",
+        ),
+        pytest.param(
+            RSS_URL,
+            "https://reader:redirect-secret@feeds.example.test/rss.xml",
+            "redirect_userinfo",
+            id="userinfo",
+        ),
+        pytest.param(
+            RSS_URL,
+            "file:///private/feed.xml",
+            "redirect_scheme",
+            id="non-http-scheme",
+        ),
+        pytest.param(
+            RSS_URL,
+            "http://feeds.example.test/rss.xml",
+            "redirect_downgrade",
+            id="https-downgrade",
+        ),
+        pytest.param(
+            RSS_URL,
+            "https://[invalid/feed.xml",
+            "redirect_invalid_url",
+            id="malformed-url",
+        ),
+    ],
+)
+def test_urllib_fetcher_rejects_untrusted_effective_url_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    request_url: str,
+    effective_url: str,
+    reason: str,
+) -> None:
+    # Given
+    response = FakeUrlResponse(effective_url, b"private response payload")
+    opener = FakeUrlOpener(response)
+    monkeypatch.setattr(collector.urllib.request, "urlopen", opener)
+    request = FetchRequest(request_url, {}, 3.0, 1_024)
+
+    # When / Then
+    with pytest.raises(collector.RedirectTrustError) as caught:
+        collector.UrlLibFetcher()(request)
+    assert caught.value.reason == reason
+    assert response.read_calls == 0
+    assert response.closed
+    assert "private response payload" not in str(caught.value)
+    assert "redirect-secret" not in str(caught.value)
+
+
+def test_urllib_fetcher_rejects_http_error_redirect_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    body = FakeUrlResponse(RSS_URL, b"private error response payload")
+    error = collector.urllib.error.HTTPError(
+        "https://other.example.test/feed.xml",
+        500,
+        "upstream error",
+        {},
+        body,
+    )
+
+    def raise_http_error(
+        request: urllib.request.Request,
+        *,
+        timeout: float,
+    ) -> FakeUrlResponse:
+        del request, timeout
+        raise error
+
+    monkeypatch.setattr(collector.urllib.request, "urlopen", raise_http_error)
+    request = FetchRequest(RSS_URL, {}, 3.0, 1_024)
+
+    # When / Then
+    with pytest.raises(collector.RedirectTrustError) as caught:
+        collector.UrlLibFetcher()(request)
+    assert caught.value.reason == "redirect_cross_host"
+    assert body.read_calls == 0
+    assert body.closed
+    assert "private error response payload" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("request_url", "effective_url"),
+    [
+        pytest.param(
+            RSS_URL,
+            "https://feeds.example.test/archive/rss.xml",
+            id="same-host-path",
+        ),
+        pytest.param(
+            "http://feeds.example.test/rss.xml",
+            RSS_URL,
+            id="http-to-https",
+        ),
+    ],
+)
+def test_urllib_fetcher_allows_trusted_same_host_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+    request_url: str,
+    effective_url: str,
+) -> None:
+    # Given
+    content = b"trusted response payload"
+    response = FakeUrlResponse(effective_url, content)
+    opener = FakeUrlOpener(response)
+    monkeypatch.setattr(collector.urllib.request, "urlopen", opener)
+    request = FetchRequest(request_url, {}, 3.0, 1_024)
+
+    # When
+    result = collector.UrlLibFetcher()(request)
+
+    # Then
+    assert result.content == content
+    assert response.read_calls == 1
+    assert response.closed
+
+
+def test_collect_isolates_rejected_redirect_and_fetches_next_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    redirected_url = "https://feeds.example.test/redirected.xml"
+    sources_path = write_sources(
+        tmp_path,
+        [
+            {"name": "Redirected", "url": redirected_url, "max_entries": 1},
+            {"name": "Public", "url": RSS_URL, "max_entries": 1},
+        ],
+    )
+    raw_dir, cards_path, state_path = paths(tmp_path)
+    opener = FakeUrlOpener(
+        FakeUrlResponse("https://other.example.test/feed.xml", RSS_FEED),
+        FakeUrlResponse(RSS_URL, RSS_FEED),
+    )
+    monkeypatch.setattr(collector.urllib.request, "urlopen", opener)
+
+    # When
+    summary = collect(sources_path, raw_dir, cards_path, state_path, now=NOW)
+
+    # Then
+    assert summary.sources_failed == 1
+    assert summary.failures[0].reason == "fetch_error"
+    assert summary.sources_fetched == 1
+    assert [request.full_url for request in opener.requests] == [
+        redirected_url,
+        RSS_URL,
+    ]
 
 
 def test_collect_uses_deterministic_card_ids_and_content_hashes(

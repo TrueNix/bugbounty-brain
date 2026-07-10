@@ -4,13 +4,14 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import tempfile
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Final, Mapping, Protocol, TypeAlias, TypedDict, assert_never
@@ -20,6 +21,9 @@ MAX_RESPONSE_BYTES: Final = 1_048_576
 MAX_ENTRIES_PER_SOURCE: Final = 50
 DEFAULT_TIMEOUT_SECONDS: Final = 15.0
 USER_AGENT: Final = "bugbounty-brain-collector/0.1"
+LOCAL_HOST_SUFFIXES: Final = frozenset(
+    {"home", "home.arpa", "internal", "lan", "local", "localdomain", "localhost"},
+)
 
 JsonValue: TypeAlias = (
     None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -48,7 +52,7 @@ class Fetcher(Protocol):
 @dataclass(frozen=True, slots=True)
 class SourceFailure:
     source_name: str
-    source_url: str
+    source_url: str = field(repr=False)
     reason: str
 
 
@@ -96,11 +100,17 @@ class FeedEntry:
 
 @dataclass(frozen=True, slots=True)
 class FetchError(Exception):
-    url: str
+    url: str = field(repr=False)
     reason: str
 
     def __str__(self) -> str:
-        return f"{self.url}: {self.reason}"
+        return f"fetch failed: {self.reason}"
+
+
+@dataclass(frozen=True, slots=True)
+class RedirectTrustError(FetchError):
+    def __str__(self) -> str:
+        return f"response URL rejected: {self.reason}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,23 +241,53 @@ class UrlLibFetcher:
                 url_request,
                 timeout=request.timeout_seconds,
             ) as response:
+                _validate_effective_url(request.url, response.geturl())
                 return FetchResponse(
                     response.getcode(),
                     dict(response.headers.items()),
                     response.read(request.max_bytes + 1),
                 )
         except urllib.error.HTTPError as exc:
-            if exc.code == 304:
-                return FetchResponse(304, dict(exc.headers.items()), b"")
-            return FetchResponse(
-                exc.code,
-                dict(exc.headers.items()),
-                exc.read(request.max_bytes + 1),
-            )
+            with contextlib.closing(exc):
+                _validate_effective_url(request.url, exc.geturl())
+                if exc.code == 304:
+                    return FetchResponse(304, dict(exc.headers.items()), b"")
+                return FetchResponse(
+                    exc.code,
+                    dict(exc.headers.items()),
+                    exc.read(request.max_bytes + 1),
+                )
         except urllib.error.URLError as exc:
-            raise FetchError(request.url, str(exc.reason)) from exc
+            raise FetchError(request.url, "network_error") from exc
         except TimeoutError as exc:
             raise FetchError(request.url, "timeout") from exc
+
+
+def _validate_effective_url(request_url: str, effective_url: str) -> None:
+    try:
+        requested = urlsplit(request_url)
+        effective = urlsplit(effective_url)
+        requested_host = requested.hostname
+        effective_host = effective.hostname
+        requested_port = requested.port
+        effective_port = effective.port
+    except ValueError as exc:
+        raise RedirectTrustError(request_url, "redirect_invalid_url") from exc
+    if effective.scheme not in {"http", "https"}:
+        raise RedirectTrustError(request_url, "redirect_scheme")
+    if effective.username is not None or effective.password is not None:
+        raise RedirectTrustError(request_url, "redirect_userinfo")
+    if (
+        requested_host is None
+        or effective_host is None
+        or requested_port == 0
+        or effective_port == 0
+    ):
+        raise RedirectTrustError(request_url, "redirect_invalid_url")
+    if requested_host.lower().rstrip(".") != effective_host.lower().rstrip("."):
+        raise RedirectTrustError(request_url, "redirect_cross_host")
+    if requested.scheme == "https" and effective.scheme != "https":
+        raise RedirectTrustError(request_url, "redirect_downgrade")
 
 
 def _load_sources(path: Path) -> list[Source]:
@@ -513,13 +553,59 @@ def _safe_article_url(link: str, fallback_url: str) -> str:
 
 
 def _valid_fetch_url(url: str) -> bool:
-    parsed = urlsplit(url)
-    return (
-        parsed.scheme in {"http", "https"}
-        and bool(parsed.netloc)
-        and parsed.username is None
-        and parsed.password is None
-    )
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or port == 0
+    ):
+        return False
+
+    normalized_host = hostname.lower().rstrip(".")
+    try:
+        address = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        try:
+            ascii_host = normalized_host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return False
+        labels = ascii_host.split(".")
+        numeric_hostname = all(
+            label.isdigit()
+            or (
+                label.lower().startswith("0x")
+                and len(label) > 2
+                and all(
+                    character in "0123456789abcdef" for character in label[2:].lower()
+                )
+            )
+            for label in labels
+        )
+        if (
+            len(labels) < 2
+            or numeric_hostname
+            or any(
+                ascii_host == suffix or ascii_host.endswith(f".{suffix}")
+                for suffix in LOCAL_HOST_SUFFIXES
+            )
+        ):
+            return False
+        return len(ascii_host) <= 253 and all(
+            label
+            and len(label) <= 63
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and all(character.isalnum() or character == "-" for character in label)
+            for label in labels
+        )
+    return address.is_global and not address.is_multicast
 
 
 def _local_name(tag: str) -> str:
