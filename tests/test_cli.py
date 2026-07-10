@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# noqa: SIZE_OK - the user constrained the complete CLI integration matrix here.
 import json
 from pathlib import Path
 import sqlite3
