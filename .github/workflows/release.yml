@@ -1,0 +1,108 @@
+name: Build release artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install project
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Validate canonical cards
+        run: |
+          set -euo pipefail
+          bugbounty-brain validate
+
+      - name: Compile release artifacts
+        run: |
+          set -euo pipefail
+          bugbounty-brain compile
+
+      - name: Verify manifest database checksum
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from hashlib import sha256
+          import json
+          from pathlib import Path
+
+          database = Path("dist/reference_knowledge.db")
+          manifest_path = Path("dist/brain-manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("database_filename") != database.name:
+              raise SystemExit("manifest database_filename does not match release database")
+          actual = sha256(database.read_bytes()).hexdigest()
+          if manifest.get("database_sha256") != actual:
+              raise SystemExit("release database SHA-256 does not match manifest")
+          print(f"verified database SHA-256: {actual}")
+          PY
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bugbounty-brain-release-artifacts
+          path: |
+            dist/reference_knowledge.db
+            dist/brain-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bugbounty-brain-release-artifacts
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          artifacts=(dist/reference_knowledge.db dist/brain-manifest.json)
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${artifacts[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${artifacts[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${RELEASE_TAG}"
+          fi
