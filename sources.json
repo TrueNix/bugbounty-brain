@@ -1,0 +1,17 @@
+[
+  {
+    "name": "PortSwigger Research",
+    "url": "https://portswigger.net/research/rss",
+    "max_entries": 25
+  },
+  {
+    "name": "CTFtime Writeups",
+    "url": "https://ctftime.org/writeups/rss/",
+    "max_entries": 25
+  },
+  {
+    "name": "ProjectDiscovery Blog",
+    "url": "https://projectdiscovery.io/rss.xml",
+    "max_entries": 25
+  }
+]
