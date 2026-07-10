@@ -98,7 +98,11 @@ PROMPT_INJECTION_PATTERNS: Final = (
         r"(?:^|[.!?]\s+)\s*(?:"
         r"(?:this\s+is|i\s+am|i'm)\s+(?:an?\s+|the\s+)?"
         r"(?:system|developer|assistant)\s+message\b|"
-        r"(?:system|developer|assistant)(?:\s+message)?\s*:)",
+        r"(?:system|developer|assistant)(?:\s+message)?\s*:\s*"
+        r"(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|"
+        r"you\s+(?:must|should|need\s+to)\s+)?"
+        r"(?:ignore|disregard|override|replace|follow|obey|execute|treat|act|"
+        r"respond|answer|reveal|exfiltrate|leak|print|return|provide|send|show)\b)",
         re.I | re.M,
     ),
     re.compile(
@@ -106,9 +110,9 @@ PROMPT_INJECTION_PATTERNS: Final = (
         r"(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|"
         r"you\s+(?:must|should|need\s+to)\s+)?"
         r"(?:reveal|exfiltrate|leak|print|return|provide|send|show)\b"
-        r"[^\r\n.!?]{0,64}\b(?:"
-        r"(?:system|developer)\s+prompts?|"
-        r"(?:hidden|initial)\s+(?:prompts?|instructions?)|"
+        r"[^\r\n.!?]{0,64}\b(?:your|all|the|hidden|stored)\s+"
+        r"(?:(?:hidden|stored|initial|system|developer)\s+){0,2}(?:"
+        r"prompts?|instructions?|"
         r"(?:api|access|auth(?:entication)?)?[-_ ]*tokens?|"
         r"api[-_ ]*keys?|secrets?|credentials?)\b",
         re.I | re.M,
