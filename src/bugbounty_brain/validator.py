@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# noqa: E501  # noqa: SIZE_OK - keep deterministic card issue ordering centralized.
+
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -82,6 +84,42 @@ PLACEHOLDER_RE: Final = re.compile(
     r"^(?:token|your_token|api_key|db_password|password|secret|changeme|dummy|"
     r"placeholder)$"
 )
+PROMPT_INJECTION_PATTERNS: Final = (
+    re.compile(
+        r"(?:^|[.!?]\s+)\s*"
+        r"(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|"
+        r"you\s+(?:must|should|need\s+to)\s+)?"
+        r"(?:ignore|disregard)\b[^\r\n.!?]{0,64}\b"
+        r"(?:(?:previous|prior)(?:\s+(?:system|developer|assistant))?|system)"
+        r"\s+instructions?\b",
+        re.I | re.M,
+    ),
+    re.compile(
+        r"(?:^|[.!?]\s+)\s*(?:"
+        r"(?:this\s+is|i\s+am|i'm)\s+(?:an?\s+|the\s+)?"
+        r"(?:system|developer|assistant)\s+message\b|"
+        r"(?:system|developer|assistant)(?:\s+message)?\s*:)",
+        re.I | re.M,
+    ),
+    re.compile(
+        r"(?:^|[.!?]\s+)\s*"
+        r"(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|"
+        r"you\s+(?:must|should|need\s+to)\s+)?"
+        r"(?:reveal|exfiltrate|leak|print|return|provide|send|show)\b"
+        r"[^\r\n.!?]{0,64}\b(?:"
+        r"(?:system|developer)\s+prompts?|"
+        r"(?:hidden|initial)\s+(?:prompts?|instructions?)|"
+        r"(?:api|access|auth(?:entication)?)?[-_ ]*tokens?|"
+        r"api[-_ ]*keys?|secrets?|credentials?)\b",
+        re.I | re.M,
+    ),
+    re.compile(
+        r"<\|(?:system|developer|assistant|user|im_start|im_end|"
+        r"start_header_id|end_header_id|eot_id)\|>|"
+        r"<</?sys>>|\[/?inst\]|</?(?:system|developer|assistant)>",
+        re.I,
+    ),
+)
 
 
 def validate_card(card: Mapping[str, JsonValue]) -> list[ValidationIssue]:
@@ -116,6 +154,12 @@ def validate_card(card: Mapping[str, JsonValue]) -> list[ValidationIssue]:
     ):
         if field in card:
             issues.extend(_validate_enum(card, field, allowed))
+
+    for field in ("title", "summary"):
+        if isinstance(text := card.get(field), str) and any(
+            pattern.search(text) for pattern in PROMPT_INJECTION_PATTERNS
+        ):
+            issues.append(_issue("prompt_injection_pattern", f"$.{field}"))
 
     for location, text in _walk_text(card, "$"):
         issues.extend(_secret_issues(location, text))
