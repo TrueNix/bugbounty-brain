@@ -133,6 +133,13 @@ checks the database bytes against the manifest's `database_sha256`, uploads both
 artifacts, and publishes them on the matching GitHub Release. A manual dispatch
 builds and uploads workflow artifacts without creating a GitHub Release.
 
+When reviewed cards merge to the default branch, the auto-release workflow
+validates and compiles them and publishes a new `latest` GitHub Release
+(`v1.<date>.<run>`), so consumers that track `releases/latest` pick up merged
+knowledge without a manual tag. It skips publishing when the card content
+(`source_sha256`) is unchanged since the latest release, and manual `v*` tagging
+above still works unchanged.
+
 ## Consuming a release
 
 Download `reference_knowledge.db` and `brain-manifest.json` from the same release.
