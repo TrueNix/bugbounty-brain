@@ -15,6 +15,7 @@ from bugbounty_brain.compiler import (
     compile_brain,
 )
 from bugbounty_brain.collector import CollectionSummary, collect
+from bugbounty_brain.enricher import EnrichmentError, EnrichSummary, enrich_cards
 from bugbounty_brain.validator import ValidationIssue, ValidationReport, validate_cards
 
 PROGRAM_NAME: Final = "bugbounty-brain"
@@ -76,6 +77,18 @@ def _collection_payload(summary: CollectionSummary) -> dict[str, JsonValue]:
     }
 
 
+def _enrich_payload(summary: EnrichSummary) -> dict[str, JsonValue]:
+    return {
+        "cards_total": summary.cards_total,
+        "cards_changed": summary.cards_changed,
+        "cards_unchanged": summary.cards_unchanged,
+        "enrichment_version": summary.enrichment_version,
+        "cves_total": summary.cves_total,
+        "products_total": summary.products_total,
+        "techniques_total": summary.techniques_total,
+    }
+
+
 def _compile_payload(summary: CompileSummary) -> dict[str, JsonValue]:
     return {
         "schema_version": summary.schema_version,
@@ -116,6 +129,23 @@ def _collect_command(arguments: _Arguments) -> int:
     return int(all_sources_failed)
 
 
+def _enrich_command(arguments: _Arguments) -> int:
+    try:
+        summary = enrich_cards(arguments.cards_path)
+    except EnrichmentError as error:
+        _emit_json(
+            {
+                "error": "enrichment_failed",
+                "reason": error.reason,
+                "location": error.location,
+            },
+            stderr=True,
+        )
+        return 1
+    _emit_json(_enrich_payload(summary))
+    return 0
+
+
 def _compile_command(arguments: _Arguments) -> int:
     try:
         summary = compile_brain(
@@ -144,6 +174,9 @@ def _all_command(arguments: _Arguments) -> int:
     collection_exit = _collect_command(arguments)
     if collection_exit != 0:
         return collection_exit
+    enrich_exit = _enrich_command(arguments)
+    if enrich_exit != 0:
+        return enrich_exit
     validation_exit = _validate_command(arguments)
     if validation_exit != 0:
         return validation_exit
@@ -210,6 +243,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_source_arguments(collect_parser)
     _add_cards_argument(collect_parser)
     collect_parser.set_defaults(runner=_collect_command)
+    enrich_parser = commands.add_parser(
+        "enrich",
+        help="Deterministically derive cves, products, and techniques for cards.",
+    )
+    _add_cards_argument(enrich_parser)
+    enrich_parser.set_defaults(runner=_enrich_command)
     validate_parser = commands.add_parser(
         "validate", help="Validate canonical knowledge cards."
     )

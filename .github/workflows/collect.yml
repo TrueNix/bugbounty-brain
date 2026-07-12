@@ -69,6 +69,11 @@ jobs:
           set -euo pipefail
           bugbounty-brain collect
 
+      - name: Enrich collected cards
+        run: |
+          set -euo pipefail
+          bugbounty-brain enrich
+
       - name: Validate canonical cards
         run: |
           set -euo pipefail

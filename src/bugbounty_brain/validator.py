@@ -65,6 +65,11 @@ LIST_LIMITS: Final[Mapping[str, int]] = MappingProxyType(
 CONFIDENCE_VALUES: Final = frozenset({"low", "medium", "high"})
 SAFETY_VALUES: Final = frozenset({"public", "sanitized"})
 REQUIRED_FIELDS: Final = (*STRING_LIMITS, *LIST_LIMITS, "confidence", "safety")
+ENRICHMENT_VERSIONS: Final = frozenset({1})
+ENRICHMENT_LIST_FIELDS: Final = ("cves", "products", "techniques")
+ENRICHMENT_FIELDS: Final = frozenset(
+    {"version", "enriched_at", *ENRICHMENT_LIST_FIELDS}
+)
 ID_RE: Final = re.compile(r"^[a-z0-9][a-z0-9-]{2,83}-[0-9a-f]{12}$")
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 CVE_RE: Final = re.compile(r"^CVE-\d{4}-\d{4,}$")
@@ -165,6 +170,9 @@ def validate_card(card: Mapping[str, JsonValue]) -> list[ValidationIssue]:
         ):
             issues.append(_issue("prompt_injection_pattern", f"$.{field}"))
 
+    if "enrichment" in card:
+        issues.extend(_validate_enrichment(card["enrichment"]))
+
     for location, text in _walk_text(card, "$"):
         issues.extend(_secret_issues(location, text))
 
@@ -253,6 +261,60 @@ def _validate_string_list(
 ) -> list[ValidationIssue]:
     value = card[field]
     location = f"$.{field}"
+    if not isinstance(value, list):
+        return [_issue("invalid_type", location)]
+
+    issues: list[ValidationIssue] = []
+    if len(value) > LIST_LIMITS[field]:
+        issues.append(_issue("list_too_long", location))
+    for index, item in enumerate(value):
+        item_location = f"{location}[{index}]"
+        if not isinstance(item, str):
+            issues.append(_issue("invalid_type", item_location))
+            continue
+        if not _clean_string(item):
+            issues.append(_issue("unclean_string", item_location))
+        elif field == "cves" and not CVE_RE.fullmatch(item):
+            issues.append(_issue("invalid_cve", item_location))
+    return issues
+
+
+def _validate_enrichment(value: JsonValue) -> list[ValidationIssue]:
+    location = "$.enrichment"
+    if not isinstance(value, Mapping):
+        return [_issue("invalid_type", location)]
+
+    issues: list[ValidationIssue] = []
+    for key in sorted(set(value) - ENRICHMENT_FIELDS):
+        issues.append(_issue("unexpected_field", f"{location}.{key}"))
+
+    version = value.get("version")
+    if not (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version in ENRICHMENT_VERSIONS
+    ):
+        issues.append(_issue("invalid_enrichment_version", f"{location}.version"))
+
+    enriched_at = value.get("enriched_at")
+    if isinstance(enriched_at, str):
+        issues.extend(_validate_timestamp(enriched_at, "enrichment.enriched_at"))
+    else:
+        issues.append(_issue("invalid_type", f"{location}.enriched_at"))
+
+    for field in ENRICHMENT_LIST_FIELDS:
+        issues.extend(_validate_enrichment_list(value, field))
+    return issues
+
+
+def _validate_enrichment_list(
+    block: Mapping[str, JsonValue],
+    field: str,
+) -> list[ValidationIssue]:
+    location = f"$.enrichment.{field}"
+    if field not in block:
+        return [_issue("missing_required", location)]
+    value = block[field]
     if not isinstance(value, list):
         return [_issue("invalid_type", location)]
 
