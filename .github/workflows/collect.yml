@@ -45,16 +45,17 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin \
             "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          # The automation branch is a throwaway view of the default branch: each
+          # run regenerates the full cards.jsonl, so any prior automation commits
+          # are discarded by resetting to the default branch. Rebasing them only
+          # created conflicts once the canonical cards changed. Fetch the branch
+          # first, when present, so the later --force-with-lease push has a base.
           if git ls-remote --exit-code --heads origin "${AUTOMATION_BRANCH}" >/dev/null 2>&1; then
             git fetch --no-tags origin \
               "+refs/heads/${AUTOMATION_BRANCH}:refs/remotes/origin/${AUTOMATION_BRANCH}"
-            git checkout --force -B "${AUTOMATION_BRANCH}" \
-              "refs/remotes/origin/${AUTOMATION_BRANCH}"
-            git rebase "refs/remotes/origin/${DEFAULT_BRANCH}"
-          else
-            git checkout --force -B "${AUTOMATION_BRANCH}" \
-              "refs/remotes/origin/${DEFAULT_BRANCH}"
           fi
+          git checkout --force -B "${AUTOMATION_BRANCH}" \
+            "refs/remotes/origin/${DEFAULT_BRANCH}"
 
       - name: Restore collector state
         id: collector-state
