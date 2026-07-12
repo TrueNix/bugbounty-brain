@@ -9,15 +9,19 @@ The repository is a knowledge supply, not a target or engagement database.
 
 ## Architecture
 
-The pipeline has four stages:
+The pipeline has five stages:
 
 1. `collect` polls the feeds in `sources.json` with conditional HTTP requests,
    stores content-addressed raw snapshots locally, and appends deterministic,
    deduplicated knowledge cards.
-2. `validate` checks the card schema, provenance, bounds, URL schemes, and likely
-   secret material. Validation fails closed.
-3. Human review decides whether generated card changes may merge.
-4. `compile` validates again and builds a deterministic SQLite database with an
+2. `enrich` derives `cves`, `products`, and `techniques` for every card from its
+   own title and summary using only deterministic rules (a CVE pattern, curated
+   keyword dictionaries, and CTFtime topic parsing). It is idempotent, never
+   mutates source-derived text, and preserves any human-curated taxonomy.
+3. `validate` checks the card schema, provenance, bounds, URL schemes, the
+   optional enrichment block, and likely secret material. Validation fails closed.
+4. Human review decides whether generated card changes may merge.
+5. `compile` validates again and builds a deterministic SQLite database with an
    FTS5 search index and a manifest describing the artifact.
 
 `knowledge/cards.jsonl` is the canonical data source. It is line-oriented so
@@ -71,13 +75,16 @@ Run commands from the repository root to use their default paths:
 # Poll sources.json; write raw/, knowledge/cards.jsonl, and collector state.
 bugbounty-brain collect
 
+# Deterministically derive cves/products/techniques in knowledge/cards.jsonl.
+bugbounty-brain enrich
+
 # Validate knowledge/cards.jsonl.
 bugbounty-brain validate
 
 # Build dist/reference_knowledge.db and dist/brain-manifest.json.
 bugbounty-brain compile
 
-# Collect, validate, then compile; stop at the first failed stage.
+# Collect, enrich, validate, then compile; stop at the first failed stage.
 bugbounty-brain all
 ```
 

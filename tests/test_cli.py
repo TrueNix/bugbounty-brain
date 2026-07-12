@@ -88,7 +88,8 @@ def test_main_prints_help_when_global_help_is_requested(
     assert raised.value.code == 0
     assert "usage: bugbounty-brain" in output.out
     assert all(
-        command in output.out for command in ("collect", "validate", "compile", "all")
+        command in output.out
+        for command in ("collect", "enrich", "validate", "compile", "all")
     )
     assert output.err == ""
 
@@ -135,6 +136,57 @@ def test_packaging_metadata_declares_installable_distribution_when_built() -> No
     assert configuration["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
     assert "F" in configuration["tool"]["ruff"]["lint"]["select"]
     assert configuration["tool"]["mypy"]["strict"] is True
+
+
+def test_enrich_emits_summary_and_populates_default_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a default-path card whose text implies a technique.
+    from bugbounty_brain.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    card = valid_card()
+    card["techniques"] = []
+    card["title"] = "SAML authentication bypass"
+    write_card(Path("knowledge/cards.jsonl"), card)
+
+    # When: the enrich command runs.
+    exit_code = main(["enrich"])
+
+    # Then: it reports a machine-readable summary and derives the technique.
+    output = capsys.readouterr()
+    document = json.loads(output.out)
+    enriched = json.loads(Path("knowledge/cards.jsonl").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert document["cards_total"] == 1
+    assert document["cards_changed"] == 1
+    assert enriched["techniques"] == ["saml"]
+    assert enriched["enrichment"]["version"] == 1
+    assert output.err == ""
+
+
+def test_enrich_fails_closed_on_malformed_cards(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a cards file containing a malformed line.
+    from bugbounty_brain.cli import main
+
+    cards_path = tmp_path / "cards.jsonl"
+    cards_path.write_text("{not json}\n", encoding="utf-8")
+
+    # When: the enrich command runs against it.
+    exit_code = main(["enrich", "--cards-path", str(cards_path)])
+
+    # Then: the command fails and names the error on stderr only.
+    output = capsys.readouterr()
+    document = json.loads(output.err)
+    assert exit_code == 1
+    assert document["error"] == "enrichment_failed"
+    assert document["reason"] == "malformed_jsonl"
+    assert output.out == ""
 
 
 def test_validate_prints_clean_json_report_when_default_cards_are_valid(
@@ -509,13 +561,14 @@ def test_all_stops_after_invalid_validation_report(
     # When: the complete pipeline is requested.
     exit_code = cli_module.main(argv)
 
-    # Then: collection and validation emit JSON, while compilation never starts.
+    # Then: collection, enrichment, and validation emit JSON; compilation never starts.
     output = capsys.readouterr()
     documents = [json.loads(line) for line in output.out.splitlines()]
     assert exit_code == 1
-    assert len(documents) == 2
+    assert len(documents) == 3
     assert documents[0]["sources_not_modified"] == 1
-    assert documents[1]["issues"] == [
+    assert documents[1]["enrichment_version"] == 1
+    assert documents[2]["issues"] == [
         {"code": "missing_required", "location": "line 1.summary"}
     ]
     assert output.err == ""
@@ -538,7 +591,7 @@ def test_all_runs_real_validation_and_compilation_after_collection_succeeds(
     # When: the complete pipeline is requested with every path overridden.
     exit_code = cli_module.main(argv)
 
-    # Then: all three stages emit JSON and the compiled FTS artifact is searchable.
+    # Then: all four stages emit JSON and the compiled FTS artifact is searchable.
     output = capsys.readouterr()
     documents = [json.loads(line) for line in output.out.splitlines()]
     with sqlite3.connect(database_path) as connection:
@@ -546,9 +599,10 @@ def test_all_runs_real_validation_and_compilation_after_collection_succeeds(
             "SELECT id FROM cards_fts WHERE cards_fts MATCH ?", ("summary:remediation",)
         ).fetchall()
     assert exit_code == 0
-    assert len(documents) == 3
+    assert len(documents) == 4
     assert documents[0]["sources_not_modified"] == 1
-    assert documents[1]["exit_code"] == 0
-    assert documents[2] == json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert documents[1]["cards_total"] == 1
+    assert documents[2]["exit_code"] == 0
+    assert documents[3] == json.loads(manifest_path.read_text(encoding="utf-8"))
     assert matches == [(valid_card()["id"],)]
     assert output.err == ""

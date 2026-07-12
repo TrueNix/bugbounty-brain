@@ -349,3 +349,71 @@ def test_validate_cards_exposes_stable_counts_and_exit_code_when_report_is_clean
     assert report.ok is True
     assert report.exit_code == 0
     assert report.issues == ()
+
+
+def enrichment_block(**overrides: object) -> dict[str, object]:
+    block: dict[str, object] = {
+        "version": 1,
+        "enriched_at": "2026-07-12T00:00:00Z",
+        "cves": ["CVE-2024-53677"],
+        "products": ["apache-struts"],
+        "techniques": ["input-validation-bypass"],
+    }
+    block.update(overrides)
+    return block
+
+
+def test_validate_card_accepts_a_well_formed_enrichment_block() -> None:
+    # Given: a valid card carrying a well-formed enrichment block.
+    card = valid_card(enrichment=enrichment_block())
+
+    # When: the card is validated.
+    issues = validate_card(card)
+
+    # Then: no issues are reported.
+    assert issues == []
+
+
+def test_validate_card_accepts_cards_without_enrichment() -> None:
+    # Given: a valid card that has never been enriched.
+    card = valid_card()
+
+    # When: the card is validated.
+    issues = validate_card(card)
+
+    # Then: the optional enrichment block is not required.
+    assert issues == []
+
+
+def test_validate_card_rejects_malformed_enrichment_block() -> None:
+    # Given: an enrichment block with a bad version, timestamp, CVE, and extra key.
+    card = valid_card(
+        enrichment=enrichment_block(
+            version=2,
+            enriched_at="2026-07-12",
+            cves=["not-a-cve"],
+            note="unexpected",
+        )
+    )
+
+    # When: the card is validated.
+    issues = validate_card(card)
+
+    # Then: every enrichment defect is reported at its precise location.
+    assert issue_pairs(issues) == {
+        ("invalid_enrichment_version", "$.enrichment.version"),
+        ("invalid_timestamp", "$.enrichment.enriched_at"),
+        ("invalid_cve", "$.enrichment.cves[0]"),
+        ("unexpected_field", "$.enrichment.note"),
+    }
+
+
+def test_validate_card_rejects_non_mapping_enrichment() -> None:
+    # Given: an enrichment field that is not an object.
+    card = valid_card(enrichment=["nope"])
+
+    # When: the card is validated.
+    issues = validate_card(card)
+
+    # Then: the type violation is reported.
+    assert issue_pairs(issues) == {("invalid_type", "$.enrichment")}
