@@ -81,6 +81,10 @@ bugbounty-brain enrich
 # Validate knowledge/cards.jsonl.
 bugbounty-brain validate
 
+# Track consecutive source-fetch failures; nonzero when a feed keeps failing.
+bugbounty-brain collect > collect-summary.json
+bugbounty-brain health --summary collect-summary.json
+
 # Build dist/reference_knowledge.db and dist/brain-manifest.json.
 bugbounty-brain compile
 
@@ -108,10 +112,17 @@ python -m build
 CI runs the test, lint, format, type-check, and package-build gates on every push
 and pull request. The collection workflow runs hourly at minute 17 and can also
 be dispatched manually. Only one collection run executes at a time. It restores
-collector state from the Actions cache, collects and validates cards, commits
-only the canonical JSONL to `automation/knowledge-collection`, and creates or
-updates a pull request with `gh`. Raw snapshots, state, and `dist/` are never
+collector state from the Actions cache, collects, enriches, and validates cards,
+commits only the canonical JSONL to `automation/knowledge-collection`, and creates
+or updates a pull request with `gh`. Raw snapshots, state, and `dist/` are never
 committed.
+
+Each run also folds the collection summary into a cached source-health file with
+`bugbounty-brain health`. A source that fails to fetch for at least three
+consecutive runs is reported in the run's job summary and raised as a tracking
+issue, so a feed that silently rots (URL move, format change, sustained 4xx/5xx)
+surfaces instead of quietly dropping out of the supply. The health report never
+blocks collection: cards from healthy sources are still proposed.
 
 Collection pull requests require review before merge. Review source
 allowlisting, attribution, accuracy, sanitization, and the complete card diff;

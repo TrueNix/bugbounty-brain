@@ -16,6 +16,7 @@ from bugbounty_brain.compiler import (
 )
 from bugbounty_brain.collector import CollectionSummary, collect
 from bugbounty_brain.enricher import EnrichmentError, EnrichSummary, enrich_cards
+from bugbounty_brain.health import DEFAULT_THRESHOLD, record, report_payload
 from bugbounty_brain.validator import ValidationIssue, ValidationReport, validate_cards
 
 PROGRAM_NAME: Final = "bugbounty-brain"
@@ -25,6 +26,7 @@ DEFAULT_CARDS_PATH: Final = Path("knowledge/cards.jsonl")
 DEFAULT_STATE_PATH: Final = Path(".cache/collector-state.json")
 DEFAULT_DATABASE_PATH: Final = Path("dist/reference_knowledge.db")
 DEFAULT_MANIFEST_PATH: Final = Path("dist/brain-manifest.json")
+DEFAULT_HEALTH_PATH: Final = Path(".cache/source-health.json")
 
 JsonValue: TypeAlias = (
     None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -38,6 +40,9 @@ class _Arguments(argparse.Namespace):
     state_path: Path
     database_path: Path
     manifest_path: Path
+    summary_path: Path
+    health_path: Path
+    threshold: int
     runner: Callable[["_Arguments"], int]
 
 
@@ -127,6 +132,23 @@ def _collect_command(arguments: _Arguments) -> int:
         and summary.sources_not_modified == 0
     )
     return int(all_sources_failed)
+
+
+def _health_command(arguments: _Arguments) -> int:
+    try:
+        report = record(
+            arguments.summary_path,
+            arguments.health_path,
+            threshold=arguments.threshold,
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        _emit_json(
+            {"error": "health_summary_unreadable", "message": str(error)},
+            stderr=True,
+        )
+        return 1
+    _emit_json(report_payload(report))
+    return report.exit_code
 
 
 def _enrich_command(arguments: _Arguments) -> int:
@@ -260,6 +282,29 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_cards_argument(compile_parser)
     _add_output_arguments(compile_parser)
     compile_parser.set_defaults(runner=_compile_command)
+    health_parser = commands.add_parser(
+        "health",
+        help="Track and report consecutive source-fetch failure streaks.",
+    )
+    health_parser.add_argument(
+        "--summary",
+        dest="summary_path",
+        type=Path,
+        required=True,
+    )
+    health_parser.add_argument(
+        "--health-path",
+        dest="health_path",
+        type=Path,
+        default=DEFAULT_HEALTH_PATH,
+    )
+    health_parser.add_argument(
+        "--threshold",
+        dest="threshold",
+        type=int,
+        default=DEFAULT_THRESHOLD,
+    )
+    health_parser.set_defaults(runner=_health_command)
     all_parser = commands.add_parser("all", help="Collect, validate, then compile.")
     _add_source_arguments(all_parser)
     _add_cards_argument(all_parser)

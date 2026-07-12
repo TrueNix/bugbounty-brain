@@ -89,7 +89,7 @@ def test_main_prints_help_when_global_help_is_requested(
     assert "usage: bugbounty-brain" in output.out
     assert all(
         command in output.out
-        for command in ("collect", "enrich", "validate", "compile", "all")
+        for command in ("collect", "enrich", "health", "validate", "compile", "all")
     )
     assert output.err == ""
 
@@ -187,6 +187,71 @@ def test_enrich_fails_closed_on_malformed_cards(
     assert document["error"] == "enrichment_failed"
     assert document["reason"] == "malformed_jsonl"
     assert output.out == ""
+
+
+def _write_summary(path: Path, *failures: tuple[str, str, str]) -> None:
+    payload = {
+        "sources_total": 3,
+        "sources_failed": len(failures),
+        "failures": [
+            {"source_name": name, "source_url": url, "reason": reason}
+            for name, url, reason in failures
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_health_flags_source_over_threshold_with_failure_exit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a collection summary reporting one failed source.
+    from bugbounty_brain.cli import main
+
+    summary = tmp_path / "summary.json"
+    state = tmp_path / "health.json"
+    failure = ("PortSwigger", "https://portswigger.net/research/rss", "http_500")
+    _write_summary(summary, failure)
+    argv = [
+        "health",
+        "--summary",
+        str(summary),
+        "--health-path",
+        str(state),
+        "--threshold",
+        "1",
+    ]
+
+    # When: health is evaluated at a threshold of one.
+    exit_code = main(argv)
+
+    # Then: the source is unhealthy and the command exits nonzero.
+    document = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert document["ok"] is False
+    assert document["unhealthy"][0]["source_url"] == failure[1]
+
+
+def test_health_reports_ok_when_no_sources_fail(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a collection summary with no failures.
+    from bugbounty_brain.cli import main
+
+    summary = tmp_path / "summary.json"
+    _write_summary(summary)
+
+    # When: health is evaluated.
+    exit_code = main(
+        ["health", "--summary", str(summary), "--health-path", str(tmp_path / "h.json")]
+    )
+
+    # Then: the report is ok and the command exits zero.
+    document = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert document["ok"] is True
+    assert document["total_failing"] == 0
 
 
 def test_validate_prints_clean_json_report_when_default_cards_are_valid(

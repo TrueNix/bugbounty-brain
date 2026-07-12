@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 concurrency:
   group: collect-public-knowledge-${{ github.repository }}
@@ -64,10 +65,19 @@ jobs:
           restore-keys: |
             collector-state-${{ runner.os }}-${{ github.repository_id }}-
 
+      - name: Restore source-health state
+        id: source-health
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/source-health.json
+          key: source-health-${{ runner.os }}-${{ github.repository_id }}-${{ github.run_id }}
+          restore-keys: |
+            source-health-${{ runner.os }}-${{ github.repository_id }}-
+
       - name: Collect public cards
         run: |
           set -euo pipefail
-          bugbounty-brain collect
+          bugbounty-brain collect | tee collect-summary.json
 
       - name: Enrich collected cards
         run: |
@@ -78,6 +88,72 @@ jobs:
         run: |
           set -euo pipefail
           bugbounty-brain validate
+
+      - name: Report source health
+        if: always() && hashFiles('collect-summary.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          bugbounty-brain health \
+            --summary collect-summary.json \
+            --health-path .cache/source-health.json \
+            --threshold 3 > source-health.json || true
+          cat source-health.json
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          report = json.loads(pathlib.Path("source-health.json").read_text())
+          unhealthy = report.get("unhealthy", [])
+          lines = ["## Source health", ""]
+          if unhealthy:
+              lines.append(
+                  f"{len(unhealthy)} source(s) failed at least "
+                  f"{report['threshold']} consecutive collection runs:"
+              )
+              lines.append("")
+              for item in unhealthy:
+                  lines.append(
+                      f"- **{item['source_name']}** ({item['source_url']}) — "
+                      f"{item['consecutive_failures']} consecutive failures, "
+                      f"last reason `{item['last_reason']}`, "
+                      f"first failed {item['first_failed_at']}"
+                  )
+              lines.append("")
+              lines.append("Check the feed URL and format in `sources.json`.")
+          else:
+              failing = report.get("total_failing", 0)
+              lines.append(
+                  f"All sources healthy ({failing} transiently failing, "
+                  f"none over threshold {report.get('threshold')})."
+              )
+          body = "\n".join(lines) + "\n"
+          pathlib.Path("source-health-body.md").write_text(body, encoding="utf-8")
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as handle:
+                  handle.write(body)
+          pathlib.Path("unhealthy.flag").write_text("1" if unhealthy else "0")
+          PY
+          if [ "$(cat unhealthy.flag)" = "1" ]; then
+            title="Source health: feeds failing repeatedly"
+            existing="$(gh issue list --state open --search "${title} in:title" \
+              --json number --jq '.[0].number' 2>/dev/null || true)"
+            if [ -n "${existing:-}" ]; then
+              gh issue comment "${existing}" --body-file source-health-body.md || true
+            else
+              gh issue create --title "${title}" --body-file source-health-body.md || true
+            fi
+          fi
+
+      - name: Save source-health state
+        if: always() && hashFiles('.cache/source-health.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/source-health.json
+          key: ${{ steps.source-health.outputs.cache-primary-key }}
 
       - name: Commit card changes
         id: cards
