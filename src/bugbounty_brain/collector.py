@@ -431,7 +431,7 @@ def _atom_entry(entry: ET.Element, fallback_url: str) -> FeedEntry:
 
 def _card_for(source: Source, entry: FeedEntry, fetched_at: str) -> CardRecord:
     title = _bounded(entry.title, 140)
-    summary = _bounded(entry.summary, 1_000)
+    summary = _bounded(entry.summary, 1_000) or title
     published_at = _published_at(entry.published_at, fetched_at)
     canonical = {
         "entry_key": entry.entry_key,
