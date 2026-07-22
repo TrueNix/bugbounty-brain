@@ -12,7 +12,8 @@ The repository is a knowledge supply, not a target or engagement database.
 The pipeline has five stages:
 
 1. `collect` polls the feeds in `sources.json` with conditional HTTP requests,
-   stores content-addressed raw snapshots locally, and appends deterministic,
+   stores content-addressed raw snapshots locally, and rewrites
+   `knowledge/cards.jsonl` with the existing cards plus any new, deterministic,
    deduplicated knowledge cards.
 2. `enrich` derives `cves`, `products`, and `techniques` for every card from its
    own title and summary using only deterministic rules (a CVE pattern, curated
@@ -54,12 +55,15 @@ SHA-256 digest of its normalized source-derived fields. Those fields establish
 traceability; they do not make a source claim trustworthy. Reviewers must follow
 the source,
 compare the summary with the publisher's claim, and consider whether the source
-or feed may have been compromised before merging.
+or feed may have been compromised.
 
-GitHub automation may commit only `knowledge/cards.jsonl`, and only to the stable
-automation branch used for a pull request. It never auto-merges collected
-claims. The reviewed JSONL remains the boundary between network input and a
-published database.
+GitHub automation may commit only `knowledge/cards.jsonl`, and only after the
+collected cards pass enrichment and fail-closed validation. It commits the
+canonical JSONL directly to the default branch on a schedule; no other path may
+be staged. Because there is no pull-request review step, validation is the sole
+automated boundary between network input and a published database: collected
+feed content is untrusted, and a validation failure blocks the commit and the
+downstream release.
 
 ## Commands
 
@@ -107,14 +111,15 @@ mypy src
 python -m build
 ```
 
-## Automation and review
+## Automation
 
 CI runs the test, lint, format, type-check, and package-build gates on every push
 and pull request. The collection workflow runs hourly at minute 17 and can also
 be dispatched manually. Only one collection run executes at a time. It restores
 collector state from the Actions cache, collects, enriches, and validates cards,
-commits only the canonical JSONL to `automation/knowledge-collection`, and creates
-or updates a pull request with `gh`. Raw snapshots, state, and `dist/` are never
+and — only if validation passes — commits the canonical JSONL directly to the
+default branch. The commit is refused if anything other than
+`knowledge/cards.jsonl` is staged. Raw snapshots, state, and `dist/` are never
 committed.
 
 Each run also folds the collection summary into a cached source-health file with
@@ -122,11 +127,14 @@ Each run also folds the collection summary into a cached source-health file with
 consecutive runs is reported in the run's job summary and raised as a tracking
 issue, so a feed that silently rots (URL move, format change, sustained 4xx/5xx)
 surfaces instead of quietly dropping out of the supply. The health report never
-blocks collection: cards from healthy sources are still proposed.
+blocks collection: cards from healthy sources are still committed.
 
-Collection pull requests require review before merge. Review source
-allowlisting, attribution, accuracy, sanitization, and the complete card diff;
-successful automation is not approval of an external claim.
+Collection runs without human review, so validation is the only gate on
+published knowledge. Feed content is untrusted data: a validation failure blocks
+the commit, and successful automation is not endorsement of an external claim.
+Because there is no pull request, review the committed card history and
+`sources.json` allowlist periodically for attribution, accuracy, and
+sanitization.
 
 On `v*` tags, the release workflow validates and compiles the reviewed cards,
 checks the database bytes against the manifest's `database_sha256`, uploads both

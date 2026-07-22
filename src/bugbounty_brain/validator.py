@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# noqa: E501  # noqa: SIZE_OK - keep deterministic card issue ordering centralized.
-
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
