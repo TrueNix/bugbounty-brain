@@ -73,5 +73,20 @@
     "name": "Nuclei Templates Releases",
     "url": "https://github.com/projectdiscovery/nuclei-templates/releases.atom",
     "max_entries": 25
+  },
+  {
+    "name": "HTB Writeups (momenbasel)",
+    "url": "https://github.com/momenbasel/htb-writeups/commits/main.atom",
+    "max_entries": 25
+  },
+  {
+    "name": "HTB Writeups (zweilosec)",
+    "url": "https://github.com/zweilosec/htb-writeups/commits/master.atom",
+    "max_entries": 25
+  },
+  {
+    "name": "HTB Writeups (flast101)",
+    "url": "https://github.com/flast101/HTB-writeups/commits/main.atom",
+    "max_entries": 25
   }
 ]
