@@ -13,5 +13,65 @@
     "name": "ProjectDiscovery Blog",
     "url": "https://projectdiscovery.io/rss.xml",
     "max_entries": 25
+  },
+  {
+    "name": "Google Project Zero",
+    "url": "https://googleprojectzero.blogspot.com/feeds/posts/default",
+    "max_entries": 25
+  },
+  {
+    "name": "Trail of Bits",
+    "url": "https://blog.trailofbits.com/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "Assetnote",
+    "url": "https://blog.assetnote.io/feed.xml",
+    "max_entries": 25
+  },
+  {
+    "name": "Check Point Research",
+    "url": "https://research.checkpoint.com/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "Include Security",
+    "url": "https://blog.includesecurity.com/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "The Hacker News",
+    "url": "https://feeds.feedburner.com/TheHackersNews",
+    "max_entries": 25
+  },
+  {
+    "name": "Krebs on Security",
+    "url": "https://krebsonsecurity.com/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "Rapid7 Blog",
+    "url": "https://www.rapid7.com/blog/rss/",
+    "max_entries": 25
+  },
+  {
+    "name": "Talos Intelligence",
+    "url": "https://blog.talosintelligence.com/rss/",
+    "max_entries": 25
+  },
+  {
+    "name": "Malwarebytes Labs",
+    "url": "https://blog.malwarebytes.com/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "GitHub Security Blog",
+    "url": "https://github.blog/tag/security/feed/",
+    "max_entries": 25
+  },
+  {
+    "name": "Nuclei Templates Releases",
+    "url": "https://github.com/projectdiscovery/nuclei-templates/releases.atom",
+    "max_entries": 25
   }
 ]
